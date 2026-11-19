@@ -83,9 +83,9 @@ impl Component for AuraPageModel {
     ) -> ComponentParts<Self> {
         let status_group = adw::PreferencesGroup::new();
         status_group.set_title(&t!("aura_group_title"));
-        status_group.set_description(Some(&t!("aura_group_desc")));
+        status_group.set_description(Some(&t!(crate::platform::pk("aura_group_desc"))));
 
-        let daemon_label = gtk::Label::new(Some(&t!("aura_daemon_missing_warning")));
+        let daemon_label = gtk::Label::new(Some(&t!(crate::platform::pk("aura_daemon_missing_warning"))));
         daemon_label.add_css_class("error");
         daemon_label.set_wrap(true);
         daemon_label.set_xalign(0.0);
@@ -96,7 +96,7 @@ impl Component for AuraPageModel {
         daemon_label.set_visible(false);
         status_group.add(&daemon_label);
 
-        let no_devices_label = gtk::Label::new(Some(&t!("aura_no_devices_info")));
+        let no_devices_label = gtk::Label::new(Some(&t!(crate::platform::pk("aura_no_devices_info"))));
         no_devices_label.add_css_class("dim-label");
         no_devices_label.set_wrap(true);
         no_devices_label.set_xalign(0.0);

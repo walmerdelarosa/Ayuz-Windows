@@ -49,6 +49,7 @@ pub(crate) async fn run_command_blocking(program: &str, args: &[&str]) -> Result
 ///
 /// Accepts only `&'static str` paths to prevent dynamic injection.
 /// Returns `Err` on spawn failure, non-zero exit code, or task panic.
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) async fn pkexec_read_file(path: &'static str) -> Result<String, String> {
     let result = tokio::task::spawn_blocking(move || {
         std::process::Command::new("pkexec")
@@ -116,6 +117,11 @@ pub(crate) async fn pkexec_write_sysfs(path: &'static str, value: &'static str) 
 /// `false` without logging (that's the expected "not installed" path).
 pub(crate) async fn which_exists(program: &'static str) -> bool {
     let join = tokio::task::spawn_blocking(move || {
+        // The tools probed here (grubby, easyeffects, brightnessctl, ...) are
+        // Linux-only; on Windows report them as missing without spawning.
+        if cfg!(windows) {
+            return false;
+        }
         std::process::Command::new("which")
             .arg(program)
             .status()
@@ -166,11 +172,17 @@ pub(crate) fn resolve_qdbus_path() -> &'static str {
     })
 }
 
+#[cfg(not(windows))]
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
 }
 
 fn desktop_is(name: &str) -> bool {

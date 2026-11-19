@@ -85,13 +85,13 @@ impl Component for BatteryModel {
     view! {
         adw::PreferencesGroup {
             set_title: &glib::markup_escape_text(&t!("battery_group_title")),
-            set_description: Some(&t!("battery_group_desc")),
+            set_description: Some(&t!(crate::platform::pk("battery_group_desc"))),
 
             #[template]
             add = &crate::components::widgets::DaemonWarningLabel {
                 #[watch]
                 set_visible: !model.asusd_available,
-                set_label: &t!("asusd_missing_warning"),
+                set_label: &t!(crate::platform::pk("asusd_missing_warning")),
             },
 
             add = &adw::SwitchRow {
@@ -177,6 +177,14 @@ impl Component for BatteryModel {
                 .drop_on_shutdown()
         });
 
+        // Linux suspend mode (s2idle vs. deep) lives in /sys/power/mem_sleep.
+        // Windows has no user-selectable equivalent, so the row stays disabled.
+        #[cfg(windows)]
+        sender.command(|out, _shutdown| async move {
+            out.emit(BatteryCommandOutput::DeepSleepSupported(false));
+        });
+
+        #[cfg(not(windows))]
         sender.command(|out, shutdown| {
             shutdown
                 .register(async move {

@@ -153,6 +153,7 @@ impl Component for BacklightIdleModel {
         adw::PreferencesGroup {
             set_title: &t!("sleep_group_title"),
             set_description: Some(&t!("sleep_group_desc")),
+            set_sensitive: !cfg!(windows),
 
             add = &adw::ActionRow {
                 set_title: &t!("sleep_mode_never_title"),
@@ -326,7 +327,8 @@ impl BacklightIdleModel {
             task.abort();
         }
 
-        if mode == TimeoutMode::Never {
+        // The idle timeout is implemented with swayidle (Wayland/Linux only).
+        if mode == TimeoutMode::Never || cfg!(windows) {
             return;
         }
 

@@ -32,6 +32,7 @@ const PRESET_VIDEO: &str = include_str!("../../../assets/presets/Video.json");
 const PRESET_VOICE: &str = include_str!("../../../assets/presets/Voice.json");
 const PRESET_CUSTOM_EQ: &str = include_str!("../../../assets/presets/Perfect_EQ.json");
 
+#[cfg_attr(windows, allow(dead_code))]
 const PRESETS: &[(&str, &str)] = &[
     ("Movie", PRESET_MOVIE),
     ("Music", PRESET_MUSIC),
@@ -147,6 +148,8 @@ impl Component for SoundModesModel {
                 .drop_on_shutdown()
         });
 
+        // EasyEffects (and its preset directory) only exists on Linux.
+        #[cfg(not(windows))]
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
@@ -360,6 +363,7 @@ async fn load_custom_preset(path: PathBuf) -> Result<String, String> {
     Ok(name)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 async fn install_presets() -> Result<(), String> {
     let dir = easyeffects_output_dir()?;
     tokio::fs::create_dir_all(&dir)

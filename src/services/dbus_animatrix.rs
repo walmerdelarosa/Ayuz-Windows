@@ -173,6 +173,11 @@ proxy_singleton!(ANIMATRIX_PROXY, animatrix_proxy, AnimatrixProxy);
 /// Uses a fresh D-Bus connection to avoid caching a stale result.
 /// Call only after [`detect_animatrix_hardware`] returns a supported variant.
 pub async fn check_animatrix_status() -> AnimatrixStatus {
+    // AniMatrix control on Windows would need the panel's own HID protocol;
+    // asusd (and therefore this D-Bus interface) only exists on Linux.
+    if cfg!(windows) {
+        return AnimatrixStatus::DaemonNotRunning;
+    }
     let conn = match zbus::Connection::system().await {
         Ok(c) => c,
         Err(_) => return AnimatrixStatus::DaemonNotRunning,

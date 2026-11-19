@@ -45,6 +45,8 @@ impl SimpleComponent for VolumeModel {
         adw::PreferencesGroup {
             set_title: &gtk::glib::markup_escape_text(&t!("volume_booster_title")),
             set_description: Some(&t!("volume_booster_desc")),
+            // Volume boost is driven by PipeWire (wpctl/pactl), Linux only.
+            set_sensitive: !cfg!(windows),
 
             add = &adw::ActionRow {
                 set_title: &t!("volume_level_label"),

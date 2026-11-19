@@ -14,12 +14,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see https://www.gnu.org/licenses/.
 
+// Release builds on Windows are GUI-subsystem binaries (no console window).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod autostart;
 mod components;
+mod platform;
 mod search;
 mod services;
 mod sys_paths;
+#[cfg(not(windows))]
 mod tray;
 
 use gtk4::gdk;
@@ -53,9 +58,18 @@ fn main() {
     // them to GTK via .with_args().
     let args: Vec<String> = std::env::args().collect();
 
+    // Windows: one instance per session. A second launch asks the running
+    // instance (through its tray window) to show itself, then exits.
+    #[cfg(windows)]
+    if !platform::windows::single_instance::acquire() {
+        platform::windows::tray::signal_running_instance();
+        return;
+    }
+
     // Single-instance IPC: if invoked with `--toggle-numberpad`, do not
     // launch a second GTK app. Instead connect to the already-running Ayuz
     // via its abstract Unix socket and request a NumberPad Active/Idle flip.
+    #[cfg(not(windows))]
     if args.iter().any(|arg| arg == "--toggle-numberpad") {
         if let Some(addr) = app::abstract_socket_addr("ayuz-numberpad") {
             use std::io::Write;

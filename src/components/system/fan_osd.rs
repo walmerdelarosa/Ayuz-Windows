@@ -20,6 +20,7 @@ use std::time::Duration;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
+#[cfg(not(windows))]
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use rust_i18n::t;
 
@@ -50,6 +51,9 @@ fn build() -> OsdState {
     window.set_resizable(false);
     window.add_css_class("fan-osd");
 
+    // Wayland: pin the OSD above everything at the bottom of the screen.
+    // Elsewhere (Windows, X11) it is a small undecorated window.
+    #[cfg(not(windows))]
     if gtk4_layer_shell::is_supported() {
         window.init_layer_shell();
         window.set_layer(Layer::Overlay);

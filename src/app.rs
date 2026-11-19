@@ -14,9 +14,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see https://www.gnu.org/licenses/.
 
-use std::os::unix::process::CommandExt;
-use std::process::Command;
-
 use crate::components::audio::{SoundModesModel, SoundModesMsg, VolumeModel};
 use crate::components::display::ColorGamutModel;
 use crate::components::display::OledCareModel;
@@ -56,6 +53,7 @@ use crate::components::system::battery::BatteryModel;
 use crate::components::system::fan::FanModel;
 use crate::components::system::gpu::GpuModel;
 use crate::search::sorted_nav_items;
+#[cfg(not(windows))]
 use crate::tray;
 use relm4::adw;
 use relm4::adw::prelude::*;
@@ -68,10 +66,18 @@ use std::rc::Rc;
 /// are unsupported. Abstract addresses live in a separate namespace, do not
 /// touch the filesystem, and are cleaned up automatically when the process
 /// exits - exactly what we want for a tiny CLI -> running-GUI handshake.
+#[cfg(not(windows))]
 pub(crate) fn abstract_socket_addr(name: &str) -> Option<std::os::unix::net::SocketAddr> {
     use std::os::linux::net::SocketAddrExt;
     std::os::unix::net::SocketAddr::from_abstract_name(name).ok()
 }
+
+/// Keeps the tray alive for the app's lifetime. On Linux this is the ksni
+/// StatusNotifierItem handle; the Windows tray runs on its own thread.
+#[cfg(not(windows))]
+type TrayHandle = ksni::Handle<tray::AyuzTray>;
+#[cfg(windows)]
+type TrayHandle = crate::platform::windows::tray::TrayGuard;
 
 macro_rules! launch_component {
     ($type:ty, $sender:expr) => {
@@ -129,7 +135,7 @@ pub struct AppModel {
     start_hidden: bool,
     window: gtk4::glib::WeakRef<adw::ApplicationWindow>,
     toast_overlay: adw::ToastOverlay,
-    _tray: ksni::Handle<tray::AyuzTray>,
+    _tray: TrayHandle,
     home: Controller<HomeModel>,
     apu_mem: Controller<ApuMemModel>,
     battery: Controller<BatteryModel>,
@@ -261,6 +267,8 @@ impl SimpleComponent for AppModel {
                 }
             }
             AppMsg::QuitApp => {
+                #[cfg(windows)]
+                crate::platform::windows::tray::remove_icon();
                 relm4::main_application().quit();
             }
             AppMsg::Error(text) => {
@@ -368,11 +376,17 @@ impl SimpleComponent for AppModel {
         let sound_modes = launch_component!(SoundModesModel, sender);
         let volume_widget = launch_component!(VolumeModel, sender);
 
-        let tray_svc = ksni::TrayService::new(tray::AyuzTray {
-            app_sender: sender.input_sender().clone(),
-        });
-        let tray_handle = tray_svc.handle();
-        tray_svc.spawn();
+        #[cfg(not(windows))]
+        let tray_handle: TrayHandle = {
+            let tray_svc = ksni::TrayService::new(tray::AyuzTray {
+                app_sender: sender.input_sender().clone(),
+            });
+            let handle = tray_svc.handle();
+            tray_svc.spawn();
+            handle
+        };
+        #[cfg(windows)]
+        let tray_handle: TrayHandle = spawn_windows_tray(sender.input_sender().clone());
 
         let fan_sender = fan.sender().clone();
         let initial_fan_hotkey_enabled =
@@ -385,7 +399,9 @@ impl SimpleComponent for AppModel {
         // CLI short-circuit in main.rs connects to "\0ayuz-numberpad" and
         // writes one byte; each byte received here flips the NumberPad
         // Active/Idle state at runtime without re-launching the GUI.
+        #[cfg(not(windows))]
         let numberpad_sender = numberpad.sender().clone();
+        #[cfg(not(windows))]
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
             use tokio::net::UnixListener;
@@ -706,10 +722,7 @@ impl SimpleComponent for AppModel {
                 github_btn.set_child(Some(&gh_icon));
             }
             github_btn.connect_clicked(|_| {
-                let _ = Command::new("xdg-open")
-                    .arg("https://github.com/Traciges")
-                    .process_group(0)
-                    .spawn();
+                crate::platform::open_url("https://github.com/Traciges");
             });
 
             let made_by_label = gtk4::Label::new(Some("Made by Guido"));
@@ -776,6 +789,43 @@ impl SimpleComponent for AppModel {
 
         ComponentParts { model, widgets }
     }
+}
+
+/// Starts the Windows notification-area icon. Tray events are forwarded to
+/// the app component just like the ksni tray does on Linux.
+#[cfg(windows)]
+fn spawn_windows_tray(app_sender: relm4::Sender<AppMsg>) -> TrayHandle {
+    use crate::platform::windows::tray::{self as win_tray, TrayConfig, TrayEvent};
+
+    let png = include_bytes!("../assets/trayicon.png");
+    let (icon_rgba, icon_width, icon_height) = match image::load_from_memory(png) {
+        Ok(img) => {
+            let small = image::imageops::resize(
+                &img.into_rgba8(),
+                32,
+                32,
+                image::imageops::FilterType::Lanczos3,
+            );
+            let (w, h) = small.dimensions();
+            (small.into_raw(), w, h)
+        }
+        Err(_) => (Vec::new(), 0, 0),
+    };
+
+    win_tray::spawn(
+        TrayConfig {
+            tooltip: t!("app_title").to_string(),
+            show_label: t!("tray_show").to_string(),
+            quit_label: t!("tray_exit").to_string(),
+            icon_rgba,
+            icon_width,
+            icon_height,
+        },
+        move |event| match event {
+            TrayEvent::Show => app_sender.emit(AppMsg::ShowWindow),
+            TrayEvent::Quit => app_sender.emit(AppMsg::QuitApp),
+        },
+    )
 }
 
 // ── PreferencesGroup builders ────────────────────────────────────────────────

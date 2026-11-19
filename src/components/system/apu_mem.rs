@@ -78,7 +78,7 @@ impl Component for ApuMemModel {
     view! {
         adw::PreferencesGroup {
             set_title: &t!("apu_mem_group_title"),
-            set_description: Some(&t!("apu_mem_group_desc")),
+            set_description: Some(&t!(crate::platform::pk("apu_mem_group_desc"))),
 
             #[template]
             add = &crate::components::widgets::DaemonWarningLabel {
