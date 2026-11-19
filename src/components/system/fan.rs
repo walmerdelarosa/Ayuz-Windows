@@ -80,13 +80,13 @@ impl Component for FanModel {
     view! {
         adw::PreferencesGroup {
             set_title: &t!("fan_group_title"),
-            set_description: Some(&t!("fan_group_desc")),
+            set_description: Some(&t!(crate::platform::pk("fan_group_desc"))),
 
             #[template]
             add = &crate::components::widgets::DaemonWarningLabel {
                 #[watch]
                 set_visible: !model.asusd_available,
-                set_label: &t!("asusd_missing_warning"),
+                set_label: &t!(crate::platform::pk("asusd_missing_warning")),
             },
 
             add = &adw::ActionRow {

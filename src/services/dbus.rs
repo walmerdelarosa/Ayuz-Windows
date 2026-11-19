@@ -14,6 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see https://www.gnu.org/licenses/.
 
+// On Windows the zbus proxies below are compiled (zbus is cross-platform) but
+// unused: the public hardware functions are re-exported from the ATKACPI/HID
+// backends in `crate::platform::windows` instead.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
+
 use rust_i18n::t;
 
 // ── D-Bus identifiers ────────────────────────────────────────────────────────
@@ -113,6 +118,7 @@ proxy_singleton!(PLATFORM_PROXY, platform_proxy, PlatformProxy);
 ///
 /// Opens a fresh system bus connection each time to avoid caching a stale result.
 /// Does not initialise the shared [`PLATFORM_PROXY`].
+#[cfg(not(windows))]
 pub async fn check_asusd_available() -> bool {
     let conn = match zbus::Connection::system().await {
         Ok(c) => c,
@@ -126,6 +132,7 @@ pub async fn check_asusd_available() -> bool {
 }
 
 /// Reads the current battery charge end-threshold from `asusd` (typically 80 or 100).
+#[cfg(not(windows))]
 pub async fn get_charge_limit() -> Result<u8, String> {
     let proxy = platform_proxy().await?;
     proxy
@@ -137,6 +144,7 @@ pub async fn get_charge_limit() -> Result<u8, String> {
 /// Sets the battery charge end-threshold via `asusd` and returns the applied value.
 ///
 /// Pass `80` for maintenance/health mode or `100` for a full charge.
+#[cfg(not(windows))]
 pub async fn set_charge_limit(value: u8) -> Result<u8, String> {
     let proxy = platform_proxy().await?;
     proxy
@@ -147,6 +155,7 @@ pub async fn set_charge_limit(value: u8) -> Result<u8, String> {
 }
 
 /// Reads the active fan/platform profile from `asusd`.
+#[cfg(not(windows))]
 pub async fn get_fan_profile() -> Result<FanProfile, String> {
     let proxy = platform_proxy().await?;
     proxy
@@ -162,6 +171,7 @@ pub async fn get_fan_profile() -> Result<FanProfile, String> {
 /// `NotSupported` error (e.g. on TUF laptops that only expose `low-power`),
 /// the function automatically retries with [`FanProfile::LowPower`] and returns
 /// that variant on success.
+#[cfg(not(windows))]
 pub async fn set_fan_profile(profile: FanProfile) -> Result<FanProfile, String> {
     let proxy = platform_proxy().await?;
     match proxy.set_platform_profile(profile as u32).await {
@@ -238,6 +248,7 @@ proxy_singleton!(SUPERGFX_PROXY, supergfx_proxy, SuperGfxProxy);
 /// Returns `true` if the `supergfxctl` D-Bus service is reachable.
 ///
 /// Opens a fresh system bus connection each time to avoid caching a stale result.
+#[cfg(not(windows))]
 pub async fn check_supergfxctl_available() -> bool {
     let conn = match zbus::Connection::system().await {
         Ok(c) => c,
@@ -251,6 +262,7 @@ pub async fn check_supergfxctl_available() -> bool {
 }
 
 /// Reads the active GPU mode from `supergfxctl`.
+#[cfg(not(windows))]
 pub async fn get_gpu_mode() -> Result<GfxMode, String> {
     let proxy = supergfx_proxy().await?;
     proxy
@@ -263,6 +275,7 @@ pub async fn get_gpu_mode() -> Result<GfxMode, String> {
 /// Returns the GPU modes that `supergfxctl` reports as available for switching.
 ///
 /// Note: the daemon may omit the currently active mode from this list.
+#[cfg(not(windows))]
 pub async fn get_supported_gpu_modes() -> Result<Vec<GfxMode>, String> {
     let proxy = supergfx_proxy().await?;
     proxy
@@ -277,6 +290,7 @@ pub async fn get_supported_gpu_modes() -> Result<Vec<GfxMode>, String> {
 /// The daemon queues the change and returns the *currently active* mode (not the requested one),
 /// because the switch only takes effect after a reboot or display-server restart.
 /// We therefore ignore the return value and echo back `mode` to avoid confusing log output.
+#[cfg(not(windows))]
 pub async fn set_gpu_mode(mode: GfxMode) -> Result<GfxMode, String> {
     let proxy = supergfx_proxy().await?;
     proxy
@@ -307,6 +321,7 @@ proxy_singleton!(
 );
 
 /// Reads the current APU memory (UMA frame buffer) size from `asusd`.
+#[cfg(not(windows))]
 pub async fn get_apu_mem() -> Result<i32, String> {
     let proxy = asus_armoury_apu_mem_proxy().await?;
     proxy
@@ -316,6 +331,7 @@ pub async fn get_apu_mem() -> Result<i32, String> {
 }
 
 /// Sets the APU memory (UMA frame buffer) size via `asusd` and returns the applied value.
+#[cfg(not(windows))]
 pub async fn set_apu_mem(value: i32) -> Result<i32, String> {
     let proxy = asus_armoury_apu_mem_proxy().await?;
     proxy
@@ -328,6 +344,7 @@ pub async fn set_apu_mem(value: i32) -> Result<i32, String> {
 /// Returns the list of allowed APU memory values from `asusd` (e.g. `[0, 1, 2, 4, 8]`).
 ///
 /// Returns an error if asusd is unreachable or if the laptop's BIOS does not expose this attribute.
+#[cfg(not(windows))]
 pub async fn get_apu_mem_options() -> Result<Vec<i32>, String> {
     let proxy = asus_armoury_apu_mem_proxy().await?;
     proxy
@@ -705,6 +722,7 @@ pub struct AuraDeviceInfo {
 
 /// Returns the daemon's running state. Re-uses [`PlatformProxy`] as a probe
 /// so a missing daemon and a daemon-without-Aura can be distinguished.
+#[cfg(not(windows))]
 pub async fn is_asusd_running() -> bool {
     let conn = match zbus::Connection::system().await {
         Ok(c) => c,
@@ -719,6 +737,7 @@ pub async fn is_asusd_running() -> bool {
 /// Enumerates every `xyz.ljones.Aura` object exported by `asusd` via
 /// `org.freedesktop.DBus.ObjectManager`. Returns an empty `Vec` when no
 /// keyboard / lightbar / LED hardware is registered.
+#[cfg(not(windows))]
 pub async fn discover_aura_devices() -> Result<Vec<AuraDeviceInfo>, String> {
     let conn = system_bus_connection().await?;
     let om = zbus::fdo::ObjectManagerProxy::builder(&conn)
@@ -769,6 +788,7 @@ pub async fn discover_aura_devices() -> Result<Vec<AuraDeviceInfo>, String> {
 
 // ── Per-device Aura service functions ───────────────────────────────────────
 
+#[cfg(not(windows))]
 pub async fn get_aura_brightness(path: &str) -> Result<u32, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -777,6 +797,7 @@ pub async fn get_aura_brightness(path: &str) -> Result<u32, String> {
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn set_aura_brightness(path: &str, value: u32) -> Result<u32, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -786,6 +807,7 @@ pub async fn set_aura_brightness(path: &str, value: u32) -> Result<u32, String> 
     Ok(value)
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_effect(path: &str) -> Result<AuraEffect, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -794,6 +816,7 @@ pub async fn get_aura_effect(path: &str) -> Result<AuraEffect, String> {
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn set_aura_effect(path: &str, effect: AuraEffect) -> Result<(), String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -802,6 +825,7 @@ pub async fn set_aura_effect(path: &str, effect: AuraEffect) -> Result<(), Strin
         .map_err(|e| t!("error_aura_write", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_supported_modes(path: &str) -> Result<Vec<u32>, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -810,6 +834,7 @@ pub async fn get_aura_supported_modes(path: &str) -> Result<Vec<u32>, String> {
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_supported_zones(path: &str) -> Result<Vec<u32>, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -818,6 +843,7 @@ pub async fn get_aura_supported_zones(path: &str) -> Result<Vec<u32>, String> {
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_supported_power_zones(path: &str) -> Result<Vec<u32>, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -826,6 +852,7 @@ pub async fn get_aura_supported_power_zones(path: &str) -> Result<Vec<u32>, Stri
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_supported_brightness(path: &str) -> Result<Vec<u32>, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -834,6 +861,7 @@ pub async fn get_aura_supported_brightness(path: &str) -> Result<Vec<u32>, Strin
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_all_mode_data(path: &str) -> Result<BTreeMap<u32, AuraEffect>, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -842,6 +870,7 @@ pub async fn get_aura_all_mode_data(path: &str) -> Result<BTreeMap<u32, AuraEffe
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn get_aura_led_power(path: &str) -> Result<LaptopAuraPower, String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -850,6 +879,7 @@ pub async fn get_aura_led_power(path: &str) -> Result<LaptopAuraPower, String> {
         .map_err(|e| t!("error_aura_read", error = e.to_string()).to_string())
 }
 
+#[cfg(not(windows))]
 pub async fn set_aura_led_power(path: &str, power: LaptopAuraPower) -> Result<(), String> {
     let proxy = aura_proxy_for(path).await?;
     proxy
@@ -857,3 +887,37 @@ pub async fn set_aura_led_power(path: &str, power: LaptopAuraPower) -> Result<()
         .await
         .map_err(|e| t!("error_aura_write", error = e.to_string()).to_string())
 }
+
+// ── Windows backends ────────────────────────────────────────────────────────
+
+#[cfg(windows)]
+pub use crate::platform::windows::asus::{
+    check_asusd_available,
+    get_charge_limit,
+    set_charge_limit,
+    get_fan_profile,
+    set_fan_profile,
+    check_supergfxctl_available,
+    get_gpu_mode,
+    get_supported_gpu_modes,
+    set_gpu_mode,
+    get_apu_mem,
+    set_apu_mem,
+    get_apu_mem_options,
+};
+#[cfg(windows)]
+pub use crate::platform::windows::aura::{
+    is_asusd_running,
+    discover_aura_devices,
+    get_aura_brightness,
+    set_aura_brightness,
+    get_aura_effect,
+    set_aura_effect,
+    get_aura_supported_modes,
+    get_aura_supported_zones,
+    get_aura_supported_power_zones,
+    get_aura_supported_brightness,
+    get_aura_all_mode_data,
+    get_aura_led_power,
+    set_aura_led_power,
+};

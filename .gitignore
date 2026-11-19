@@ -3,6 +3,7 @@ context/
 
 # Rust / Cargo
 /target
+/dist
 /libs
 **/*.rs.bk
 

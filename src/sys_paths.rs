@@ -14,6 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see https://www.gnu.org/licenses/.
 
+// Most of these paths are only read on Linux.
+#![cfg_attr(windows, allow(dead_code))]
+
 pub const SYS_PRODUCT_NAME: &str = "/sys/class/dmi/id/product_name";
 pub const SYS_BOARD_NAME: &str = "/sys/class/dmi/id/board_name";
 pub const SYS_BIOS_VERSION: &str = "/sys/class/dmi/id/bios_version";

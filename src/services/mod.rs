@@ -18,13 +18,37 @@ pub mod commands;
 pub mod config;
 pub mod dbus;
 pub mod dbus_animatrix;
-pub mod edge_gestures;
-pub(crate) mod evdev_runner;
-pub mod fan_hotkey;
 pub mod kde_brightness;
 pub mod migration;
-pub mod numberpad;
-pub mod numberpad_layouts;
-pub mod numberpad_pointer;
 pub mod touchpad_ctl;
+
+// evdev / uinput / i2c based listeners exist only on Linux. On Windows the
+// same module paths resolve to inert stand-ins with identical public APIs,
+// so the UI components compile unchanged and simply report "unavailable".
+#[cfg(not(windows))]
+pub mod edge_gestures;
+#[cfg(not(windows))]
+pub(crate) mod evdev_runner;
+#[cfg(not(windows))]
+pub mod fan_hotkey;
+#[cfg(not(windows))]
+pub mod numberpad;
+#[cfg(not(windows))]
+pub mod numberpad_layouts;
+#[cfg(not(windows))]
+pub mod numberpad_pointer;
+#[cfg(not(windows))]
+pub mod typing_watch;
+
+#[cfg(windows)]
+#[path = "unsupported/edge_gestures.rs"]
+pub mod edge_gestures;
+#[cfg(windows)]
+#[path = "unsupported/fan_hotkey.rs"]
+pub mod fan_hotkey;
+#[cfg(windows)]
+#[path = "unsupported/numberpad.rs"]
+pub mod numberpad;
+#[cfg(windows)]
+#[path = "unsupported/typing_watch.rs"]
 pub mod typing_watch;

@@ -112,7 +112,8 @@ impl Component for OledDimmingModel {
         };
         let widgets = view_output!();
 
-        if brightness < 100 {
+        // kscreen-doctor (KDE) applies the dimming; nothing to do elsewhere.
+        if brightness < 100 && !cfg!(windows) {
             sender.command(move |out, shutdown| {
                 shutdown
                     .register(async move {

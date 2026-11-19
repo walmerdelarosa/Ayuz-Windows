@@ -26,8 +26,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+#[cfg(not(windows))]
 use crate::services::commands::pkexec_read_file;
 use crate::services::config::{AppConfig, Profile};
+#[cfg(not(windows))]
 use crate::sys_paths::*;
 
 const IMG_ZENBOOK: &[u8] = include_bytes!("../../assets/img/zenbook.png");
@@ -165,220 +167,324 @@ fn metric_card(icon_name: &str, title: &str) -> (gtk::Box, gtk::Label) {
     (card, value_label)
 }
 
-/// Capacities (0-100) of all system batteries, whatever the kernel named them
-/// (BAT0, BAT1, BATT, ...). Peripheral batteries such as wireless mice or
-/// headsets report `scope == Device` and are skipped.
-async fn system_battery_capacities() -> Vec<u8> {
-    let mut caps = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(SYS_POWER_SUPPLY_DIR).await else {
-        return caps;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let dir = entry.path();
-        let read = |name: &str| tokio::fs::read_to_string(dir.join(name));
-        let is_battery = read("type").await.is_ok_and(|t| t.trim() == "Battery");
-        let is_peripheral = read("scope").await.is_ok_and(|s| s.trim() == "Device");
-        if !is_battery || is_peripheral {
-            continue;
+/// Linux metrics, read from sysfs/procfs.
+#[cfg(not(windows))]
+mod linux_metrics {
+    use super::*;
+
+    /// Capacities (0-100) of all system batteries, whatever the kernel named them
+    /// (BAT0, BAT1, BATT, ...). Peripheral batteries such as wireless mice or
+    /// headsets report `scope == Device` and are skipped.
+    async fn system_battery_capacities() -> Vec<u8> {
+        let mut caps = Vec::new();
+        let Ok(mut entries) = tokio::fs::read_dir(SYS_POWER_SUPPLY_DIR).await else {
+            return caps;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let dir = entry.path();
+            let read = |name: &str| tokio::fs::read_to_string(dir.join(name));
+            let is_battery = read("type").await.is_ok_and(|t| t.trim() == "Battery");
+            let is_peripheral = read("scope").await.is_ok_and(|s| s.trim() == "Device");
+            if !is_battery || is_peripheral {
+                continue;
+            }
+            if let Some(c) = read("capacity")
+                .await
+                .ok()
+                .and_then(|s| s.trim().parse::<u8>().ok())
+            {
+                caps.push(c.min(100));
+            }
         }
-        if let Some(c) = read("capacity")
+        caps
+    }
+
+    pub(super) async fn fetch_metrics() -> HomeCommandOutput {
+        let battery = {
+            let caps = system_battery_capacities().await;
+            if caps.is_empty() {
+                "N/A".to_string()
+            } else {
+                let sum: u32 = caps.iter().map(|&c| c as u32).sum();
+                format!("{}%", sum / caps.len() as u32)
+            }
+        };
+
+        let cpu = {
+            let load = tokio::fs::read_to_string(SYS_LOAD_AVG)
+                .await
+                .map(|s| s.split_whitespace().next().unwrap_or("?").to_string())
+                .unwrap_or_else(|_| "?".to_string());
+
+            let temp = cpu_temp_millideg(
+                std::path::Path::new(SYS_HWMON_DIR),
+                std::path::Path::new(SYS_THERMAL_ZONE0_TEMP),
+            )
             .await
-            .ok()
-            .and_then(|s| s.trim().parse::<u8>().ok())
-        {
-            caps.push(c.min(100));
+            .map(|millideg| format!("{}°C", millideg / 1000))
+            .unwrap_or_else(|| "?°C".to_string());
+
+            format!("{}% | {}", load, temp)
+        };
+
+        let ram = tokio::fs::read_to_string(SYS_MEM_INFO)
+            .await
+            .map(|s| {
+                let mut total: u64 = 0;
+                let mut available: u64 = 0;
+                for line in s.lines() {
+                    if line.starts_with("MemTotal:") {
+                        total = line
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                    } else if line.starts_with("MemAvailable:") {
+                        available = line
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0);
+                    }
+                    if total > 0 && available > 0 {
+                        break;
+                    }
+                }
+                if total > 0 && available <= total {
+                    format!("{}%", (total - available) * 100 / total)
+                } else {
+                    "N/A".to_string()
+                }
+            })
+            .unwrap_or_else(|_| "N/A".to_string());
+
+        let disk = tokio::process::Command::new("df")
+            .args(["-h", "/"])
+            .output()
+            .await
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout
+                    .lines()
+                    .nth(1)
+                    .and_then(|line| line.split_whitespace().nth(4))
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "N/A".to_string())
+            })
+            .unwrap_or_else(|_| "N/A".to_string());
+
+        HomeCommandOutput::MetricsRefreshed {
+            battery,
+            cpu,
+            ram,
+            disk,
         }
     }
-    caps
+
+    /// hwmon driver names of CPU temperature sensors, with the preferred sensor
+    /// labels in order (`Tdie` is the real die temperature on AMD, `Tctl` may
+    /// include a fan-control offset; `Package id 0` is the whole Intel package).
+    const CPU_HWMON_DRIVERS: &[(&str, &[&str])] = &[
+        ("k10temp", &["Tdie", "Tctl"]),
+        ("zenpower", &["Tdie", "Tctl"]),
+        ("coretemp", &["Package id 0"]),
+    ];
+
+    async fn read_trimmed(path: &std::path::Path) -> Option<String> {
+        tokio::fs::read_to_string(path)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    /// Reads a sysfs temperature file (millidegrees), if present and numeric.
+    async fn read_millideg(path: &std::path::Path) -> Option<i32> {
+        read_trimmed(path).await?.parse().ok()
+    }
+
+    /// Temperature file of one CPU hwmon device (and its current value): the
+    /// first preferred label that exists, otherwise `temp1_input`.
+    async fn hwmon_cpu_input(
+        dir: &std::path::Path,
+        labels: &[&str],
+    ) -> Option<(std::path::PathBuf, i32)> {
+        let mut by_label = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let file = entry.file_name().to_string_lossy().into_owned();
+                if let Some(prefix) = file.strip_suffix("_label") {
+                    if let Some(label) = read_trimmed(&entry.path()).await {
+                        by_label.push((label, dir.join(format!("{prefix}_input"))));
+                    }
+                }
+            }
+        }
+        for wanted in labels {
+            if let Some((_, input)) = by_label.iter().find(|(l, _)| l == wanted) {
+                if let Some(t) = read_millideg(input).await {
+                    return Some((input.clone(), t));
+                }
+            }
+        }
+        let input = dir.join("temp1_input");
+        let t = read_millideg(&input).await?;
+        Some((input, t))
+    }
+
+    /// Searches hwmon for the CPU temperature file, else uses `fallback`.
+    async fn find_cpu_temp_input(
+        hwmon_dir: &std::path::Path,
+        fallback: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, i32)> {
+        let mut devices = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir(hwmon_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                devices.push(entry.path());
+            }
+        }
+        devices.sort(); // deterministic: hwmon0, hwmon1, ...
+        for (driver, labels) in CPU_HWMON_DRIVERS {
+            for dev in &devices {
+                if read_trimmed(&dev.join("name")).await.as_deref() == Some(*driver) {
+                    if let Some(found) = hwmon_cpu_input(dev, labels).await {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        let t = read_millideg(fallback).await?;
+        Some((fallback.to_path_buf(), t))
+    }
+
+    /// Cached result of `find_cpu_temp_input`; searched again only if it fails.
+    static CPU_TEMP_INPUT: std::sync::Mutex<Option<std::path::PathBuf>> =
+        std::sync::Mutex::new(None);
+
+    /// CPU temperature in millidegrees Celsius.
+    ///
+    /// `thermal_zone0` is often a slow ACPI zone (`acpitz`) rather than the CPU,
+    /// so the CPU driver's own hwmon sensor is preferred. If none is found the
+    /// previous behaviour (reading `fallback`, i.e. `thermal_zone0`) is kept.
+    async fn cpu_temp_millideg(hwmon_dir: &std::path::Path, fallback: &std::path::Path) -> Option<i32> {
+        // Clone so the lock isn't held across `.await`.
+        let cached = CPU_TEMP_INPUT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(path) = cached {
+            if let Some(t) = read_millideg(&path).await {
+                return Some(t);
+            }
+        }
+
+        let found = find_cpu_temp_input(hwmon_dir, fallback).await;
+        let mut cache = CPU_TEMP_INPUT.lock().unwrap_or_else(|e| e.into_inner());
+        match found {
+            Some((path, t)) => {
+                *cache = Some(path);
+                Some(t)
+            }
+            None => {
+                *cache = None;
+                None
+            }
+        }
+    }
 }
 
+#[cfg(not(windows))]
+use linux_metrics::fetch_metrics;
+
+/// Windows metrics: Win32 power/memory/disk APIs plus the EC temperature
+/// sensor exposed through ATKACPI.
+#[cfg(windows)]
 async fn fetch_metrics() -> HomeCommandOutput {
-    let battery = {
-        let caps = system_battery_capacities().await;
-        if caps.is_empty() {
-            "N/A".to_string()
-        } else {
-            let sum: u32 = caps.iter().map(|&c| c as u32).sum();
-            format!("{}%", sum / caps.len() as u32)
-        }
-    };
+    use crate::platform::windows::{asus, sysinfo};
 
-    let cpu = {
-        let load = tokio::fs::read_to_string(SYS_LOAD_AVG)
-            .await
-            .map(|s| s.split_whitespace().next().unwrap_or("?").to_string())
-            .unwrap_or_else(|_| "?".to_string());
-
-        let temp = cpu_temp_millideg(
-            std::path::Path::new(SYS_HWMON_DIR),
-            std::path::Path::new(SYS_THERMAL_ZONE0_TEMP),
-        )
-        .await
-        .map(|millideg| format!("{}°C", millideg / 1000))
+    let battery = sysinfo::battery_percent()
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let load = sysinfo::cpu_usage_percent()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let temp = asus::cpu_temperature()
+        .map(|t| format!("{t}°C"))
         .unwrap_or_else(|| "?°C".to_string());
-
-        format!("{}% | {}", load, temp)
-    };
-
-    let ram = tokio::fs::read_to_string(SYS_MEM_INFO)
-        .await
-        .map(|s| {
-            let mut total: u64 = 0;
-            let mut available: u64 = 0;
-            for line in s.lines() {
-                if line.starts_with("MemTotal:") {
-                    total = line
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0);
-                } else if line.starts_with("MemAvailable:") {
-                    available = line
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0);
-                }
-                if total > 0 && available > 0 {
-                    break;
-                }
-            }
-            if total > 0 && available <= total {
-                format!("{}%", (total - available) * 100 / total)
-            } else {
-                "N/A".to_string()
-            }
-        })
-        .unwrap_or_else(|_| "N/A".to_string());
-
-    let disk = tokio::process::Command::new("df")
-        .args(["-h", "/"])
-        .output()
-        .await
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout
-                .lines()
-                .nth(1)
-                .and_then(|line| line.split_whitespace().nth(4))
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "N/A".to_string())
-        })
-        .unwrap_or_else(|_| "N/A".to_string());
+    let ram = sysinfo::memory_load_percent()
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "N/A".to_string());
+    let disk = sysinfo::system_disk_used_percent()
+        .map(|p| format!("{p}%"))
+        .unwrap_or_else(|| "N/A".to_string());
 
     HomeCommandOutput::MetricsRefreshed {
         battery,
-        cpu,
+        cpu: format!("{load}% | {temp}"),
         ram,
         disk,
     }
 }
 
-/// hwmon driver names of CPU temperature sensors, with the preferred sensor
-/// labels in order (`Tdie` is the real die temperature on AMD, `Tctl` may
-/// include a fan-control offset; `Package id 0` is the whole Intel package).
-const CPU_HWMON_DRIVERS: &[(&str, &[&str])] = &[
-    ("k10temp", &["Tdie", "Tctl"]),
-    ("zenpower", &["Tdie", "Tctl"]),
-    ("coretemp", &["Package id 0"]),
-];
-
-async fn read_trimmed(path: &std::path::Path) -> Option<String> {
-    tokio::fs::read_to_string(path)
+/// Product, board, BIOS and kernel/OS strings for the device card.
+#[cfg(not(windows))]
+async fn load_device_info() -> HomeCommandOutput {
+    let product_name = tokio::fs::read_to_string(SYS_PRODUCT_NAME)
         .await
-        .ok()
         .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let board_name = tokio::fs::read_to_string(SYS_BOARD_NAME)
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let bios_version = tokio::fs::read_to_string(SYS_BIOS_VERSION)
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let bios_date = tokio::fs::read_to_string(SYS_BIOS_DATE)
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    let kernel = tokio::process::Command::new("uname")
+        .arg("-r")
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    HomeCommandOutput::DataLoaded {
+        product_name,
+        board_name,
+        bios_version,
+        bios_date,
+        kernel,
+    }
 }
 
-/// Reads a sysfs temperature file (millidegrees), if present and numeric.
-async fn read_millideg(path: &std::path::Path) -> Option<i32> {
-    read_trimmed(path).await?.parse().ok()
+/// Same card on Windows: SMBIOS values from the registry; the "kernel" row
+/// shows the Windows version.
+#[cfg(windows)]
+async fn load_device_info() -> HomeCommandOutput {
+    let info = crate::platform::windows::sysinfo::device_info();
+    HomeCommandOutput::DataLoaded {
+        product_name: info.product_name,
+        board_name: info.board_name,
+        bios_version: info.bios_version,
+        bios_date: info.bios_date,
+        kernel: info.os_version,
+    }
 }
 
-/// Temperature file of one CPU hwmon device (and its current value): the
-/// first preferred label that exists, otherwise `temp1_input`.
-async fn hwmon_cpu_input(
-    dir: &std::path::Path,
-    labels: &[&str],
-) -> Option<(std::path::PathBuf, i32)> {
-    let mut by_label = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let file = entry.file_name().to_string_lossy().into_owned();
-            if let Some(prefix) = file.strip_suffix("_label") {
-                if let Some(label) = read_trimmed(&entry.path()).await {
-                    by_label.push((label, dir.join(format!("{prefix}_input"))));
-                }
-            }
-        }
-    }
-    for wanted in labels {
-        if let Some((_, input)) = by_label.iter().find(|(l, _)| l == wanted) {
-            if let Some(t) = read_millideg(input).await {
-                return Some((input.clone(), t));
-            }
-        }
-    }
-    let input = dir.join("temp1_input");
-    let t = read_millideg(&input).await?;
-    Some((input, t))
+#[cfg(not(windows))]
+async fn read_serial_number() -> Result<String, String> {
+    pkexec_read_file(SYS_PRODUCT_SERIAL).await
 }
 
-/// Searches hwmon for the CPU temperature file, else uses `fallback`.
-async fn find_cpu_temp_input(
-    hwmon_dir: &std::path::Path,
-    fallback: &std::path::Path,
-) -> Option<(std::path::PathBuf, i32)> {
-    let mut devices = Vec::new();
-    if let Ok(mut entries) = tokio::fs::read_dir(hwmon_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            devices.push(entry.path());
-        }
-    }
-    devices.sort(); // deterministic: hwmon0, hwmon1, ...
-    for (driver, labels) in CPU_HWMON_DRIVERS {
-        for dev in &devices {
-            if read_trimmed(&dev.join("name")).await.as_deref() == Some(*driver) {
-                if let Some(found) = hwmon_cpu_input(dev, labels).await {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    let t = read_millideg(fallback).await?;
-    Some((fallback.to_path_buf(), t))
-}
-
-/// Cached result of `find_cpu_temp_input`; searched again only if it fails.
-static CPU_TEMP_INPUT: std::sync::Mutex<Option<std::path::PathBuf>> =
-    std::sync::Mutex::new(None);
-
-/// CPU temperature in millidegrees Celsius.
-///
-/// `thermal_zone0` is often a slow ACPI zone (`acpitz`) rather than the CPU,
-/// so the CPU driver's own hwmon sensor is preferred. If none is found the
-/// previous behaviour (reading `fallback`, i.e. `thermal_zone0`) is kept.
-async fn cpu_temp_millideg(hwmon_dir: &std::path::Path, fallback: &std::path::Path) -> Option<i32> {
-    // Clone so the lock isn't held across `.await`.
-    let cached = CPU_TEMP_INPUT.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    if let Some(path) = cached {
-        if let Some(t) = read_millideg(&path).await {
-            return Some(t);
-        }
-    }
-
-    let found = find_cpu_temp_input(hwmon_dir, fallback).await;
-    let mut cache = CPU_TEMP_INPUT.lock().unwrap_or_else(|e| e.into_inner());
-    match found {
-        Some((path, t)) => {
-            *cache = Some(path);
-            Some(t)
-        }
-        None => {
-            *cache = None;
-            None
-        }
-    }
+#[cfg(windows)]
+async fn read_serial_number() -> Result<String, String> {
+    tokio::task::spawn_blocking(crate::platform::windows::sysinfo::serial_number)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn build_profile_card(
@@ -630,7 +736,7 @@ impl Component for HomeModel {
         bios_row.set_selectable(false);
 
         let kernel_row = adw::ActionRow::new();
-        kernel_row.set_title(&t!("home_kernel_title"));
+        kernel_row.set_title(&t!(crate::platform::pk("home_kernel_title")));
         kernel_row.set_selectable(false);
 
         let serial_row = adw::ActionRow::new();
@@ -730,40 +836,7 @@ impl Component for HomeModel {
         sender.command(move |out, shutdown| {
             shutdown
                 .register(async move {
-                    let product_name = tokio::fs::read_to_string(SYS_PRODUCT_NAME)
-                        .await
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
-
-                    let board_name = tokio::fs::read_to_string(SYS_BOARD_NAME)
-                        .await
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
-
-                    let bios_version = tokio::fs::read_to_string(SYS_BIOS_VERSION)
-                        .await
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
-
-                    let bios_date = tokio::fs::read_to_string(SYS_BIOS_DATE)
-                        .await
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
-
-                    let kernel = tokio::process::Command::new("uname")
-                        .arg("-r")
-                        .output()
-                        .await
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
-
-                    out.emit(HomeCommandOutput::DataLoaded {
-                        product_name,
-                        board_name,
-                        bios_version,
-                        bios_date,
-                        kernel,
-                    });
+                    out.emit(load_device_info().await);
                 })
                 .drop_on_shutdown()
         });
@@ -790,7 +863,7 @@ impl Component for HomeModel {
                 sender.command(move |out, shutdown| {
                     shutdown
                         .register(async move {
-                            let result = pkexec_read_file(SYS_PRODUCT_SERIAL).await;
+                            let result = read_serial_number().await;
                             out.emit(HomeCommandOutput::SerialRevealed(result));
                         })
                         .drop_on_shutdown()

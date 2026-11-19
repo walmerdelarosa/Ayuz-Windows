@@ -68,13 +68,13 @@ impl Component for GpuModel {
     view! {
         adw::PreferencesGroup {
             set_title: &t!("gpu_group_title"),
-            set_description: Some(&t!("gpu_group_desc")),
+            set_description: Some(&t!(crate::platform::pk("gpu_group_desc"))),
 
             #[template]
             add = &crate::components::widgets::DaemonWarningLabel {
                 #[watch]
                 set_visible: !model.supergfxctl_available,
-                set_label: &t!("supergfxctl_missing_warning"),
+                set_label: &t!(crate::platform::pk("supergfxctl_missing_warning")),
             },
 
             add = &model.combo_row.clone() -> adw::ComboRow {

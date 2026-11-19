@@ -36,6 +36,7 @@ pub trait BrightnessControl {
 /// Adjust the screen brightness by `delta_percent` (signed, e.g. +5 / -5) via KDE PowerDevil.
 /// Returns Err if D-Bus is unreachable / PowerDevil is missing; callers should fall back to
 /// brightnessctl.
+#[cfg_attr(windows, allow(dead_code))]
 pub async fn adjust_brightness_relative(delta_percent: i32) -> Result<(), String> {
     let conn = zbus::Connection::session().await.map_err(|e| e.to_string())?;
     let proxy = BrightnessControlProxy::new(&conn)

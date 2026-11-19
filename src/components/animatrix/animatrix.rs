@@ -478,7 +478,7 @@ impl Component for AnimatrixModel {
     view! {
         adw::PreferencesGroup {
             set_title: &t!("animatrix_group_title"),
-            set_description: Some(&t!("animatrix_group_desc")),
+            set_description: Some(&t!(crate::platform::pk("animatrix_group_desc"))),
 
             // Hardware not present warning
             #[template]
@@ -490,7 +490,7 @@ impl Component for AnimatrixModel {
 
             // Daemon missing warning (hardware present but asusd not running)
             add = &gtk::Label {
-                set_label: &t!("animatrix_daemon_missing_warning"),
+                set_label: &t!(crate::platform::pk("animatrix_daemon_missing_warning")),
                 set_wrap: true,
                 add_css_class: "dim-label",
                 set_xalign: 0.0,

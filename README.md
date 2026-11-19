@@ -237,6 +237,12 @@ On all other models the AniMatrix section is shown as grayed out.
 
 ---
 
+## Windows
+
+This fork also builds for Windows 10/11 (x64). Hardware control uses the ASUS System Control Interface driver (ATKACPI) and the keyboard's HID interface instead of `asusd`/`supergfxctl`; Linux-only features are shown as unavailable. See [docs/WINDOWS.md](docs/WINDOWS.md) for supported features, installation and build instructions.
+
+---
+
 ## Installation
 
 ### Package Managers:

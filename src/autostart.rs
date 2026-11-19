@@ -14,36 +14,46 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see https://www.gnu.org/licenses/.
 
-use directories::BaseDirs;
-use std::path::PathBuf;
+#[cfg(windows)]
+pub use crate::platform::windows::autostart::{is_enabled, set_enabled};
 
-const DESKTOP_FILENAME: &str = "de.guido.ayuz.desktop";
+#[cfg(not(windows))]
+pub use xdg::{is_enabled, set_enabled};
 
-fn autostart_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|d| d.config_dir().join("autostart").join(DESKTOP_FILENAME))
-}
+/// XDG autostart entry (`~/.config/autostart/de.guido.ayuz.desktop`).
+#[cfg(not(windows))]
+mod xdg {
+    use directories::BaseDirs;
+    use std::path::PathBuf;
 
-pub fn is_enabled() -> bool {
-    autostart_path().map(|p| p.exists()).unwrap_or(false)
-}
+    const DESKTOP_FILENAME: &str = "de.guido.ayuz.desktop";
 
-pub fn set_enabled(enable: bool) {
-    let Some(path) = autostart_path() else {
-        return;
-    };
-    if enable {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    fn autostart_path() -> Option<PathBuf> {
+        BaseDirs::new().map(|d| d.config_dir().join("autostart").join(DESKTOP_FILENAME))
+    }
+
+    pub fn is_enabled() -> bool {
+        autostart_path().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    pub fn set_enabled(enable: bool) {
+        let Some(path) = autostart_path() else {
+            return;
+        };
+        if enable {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let content = "[Desktop Entry]\n\
+                Type=Application\n\
+                Name=Ayuz\n\
+                Exec=ayuz --hidden\n\
+                Hidden=false\n\
+                StartupNotify=false\n\
+                X-GNOME-Autostart-enabled=true\n";
+            let _ = std::fs::write(&path, content);
+        } else {
+            let _ = std::fs::remove_file(&path);
         }
-        let content = "[Desktop Entry]\n\
-            Type=Application\n\
-            Name=Ayuz\n\
-            Exec=ayuz --hidden\n\
-            Hidden=false\n\
-            StartupNotify=false\n\
-            X-GNOME-Autostart-enabled=true\n";
-        let _ = std::fs::write(&path, content);
-    } else {
-        let _ = std::fs::remove_file(&path);
     }
 }

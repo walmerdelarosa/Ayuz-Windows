@@ -20,8 +20,49 @@ use relm4::adw::prelude::*;
 use relm4::prelude::*;
 use rust_i18n::t;
 
+#[cfg(not(windows))]
 use crate::services::commands::{run_command_blocking, which_exists};
 use crate::services::config::AppConfig;
+
+/// Whether the FN-lock mode can be changed on this system.
+///
+/// Linux persists the mode as a kernel parameter through `grubby`; Windows
+/// switches it live through the ASUS ATKACPI driver.
+async fn backend_available() -> bool {
+    #[cfg(not(windows))]
+    {
+        which_exists("grubby").await
+    }
+    #[cfg(windows)]
+    {
+        crate::platform::windows::asus::fn_lock_available()
+    }
+}
+
+/// Applies the FN-lock mode (`locked` = F1-F12 trigger the shortcut functions).
+async fn apply_fn_lock(locked: bool) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let args_flag = format!(
+            "--args=asus_wmi.fnlock_default={}",
+            if locked { "0" } else { "1" }
+        );
+        run_command_blocking(
+            "pkexec",
+            &[
+                "grubby",
+                "--update-kernel=ALL",
+                "--remove-args=asus_wmi.fnlock_default",
+                &args_flag,
+            ],
+        )
+        .await
+    }
+    #[cfg(windows)]
+    {
+        crate::platform::windows::asus::set_fn_lock(locked)
+    }
+}
 
 pub struct FnKeyModel {
     locked: bool,
@@ -62,7 +103,7 @@ impl Component for FnKeyModel {
             add = &crate::components::widgets::DaemonWarningLabel {
                 #[watch]
                 set_visible: !model.grubby_available,
-                set_label: &t!("fn_key_grubby_missing_warning"),
+                set_label: &t!(crate::platform::pk("fn_key_grubby_missing_warning")),
             },
 
             add = &model.row_hint.clone(),
@@ -107,7 +148,7 @@ impl Component for FnKeyModel {
 
         let row_hint = adw::ActionRow::new();
         row_hint.set_title(&t!("fn_key_hint_title"));
-        row_hint.set_subtitle(&t!("fn_key_hint_subtitle"));
+        row_hint.set_subtitle(&t!(crate::platform::pk("fn_key_hint_subtitle")));
         row_hint.set_selectable(false);
 
         let row_locked = adw::ActionRow::new();
@@ -137,7 +178,7 @@ impl Component for FnKeyModel {
         sender.command(|out, shutdown| {
             shutdown
                 .register(async move {
-                    let ok = which_exists("grubby").await;
+                    let ok = backend_available().await;
                     out.send(FnKeyCommandOutput::GrubbyChecked(ok)).ok();
                 })
                 .drop_on_shutdown()
@@ -153,23 +194,10 @@ impl Component for FnKeyModel {
                 self.check_locked.set_active(locked);
                 self.check_normal.set_active(!locked);
 
-                let args_flag = format!(
-                    "--args=asus_wmi.fnlock_default={}",
-                    if locked { "0" } else { "1" }
-                );
                 sender.command(move |out, shutdown| {
                     shutdown
                         .register(async move {
-                            let result = run_command_blocking(
-                                "pkexec",
-                                &[
-                                    "grubby",
-                                    "--update-kernel=ALL",
-                                    "--remove-args=asus_wmi.fnlock_default",
-                                    &args_flag,
-                                ],
-                            )
-                            .await;
+                            let result = apply_fn_lock(locked).await;
                             match result {
                                 Ok(()) => out.emit(FnKeyCommandOutput::Set(locked)),
                                 Err(e) => out.emit(FnKeyCommandOutput::Error(e)),
@@ -184,24 +212,10 @@ impl Component for FnKeyModel {
                 }
                 self.locked = locked;
 
-                let args_flag = format!(
-                    "--args=asus_wmi.fnlock_default={}",
-                    if locked { "0" } else { "1" }
-                );
-
                 sender.command(move |out, shutdown| {
                     shutdown
                         .register(async move {
-                            let result = run_command_blocking(
-                                "pkexec",
-                                &[
-                                    "grubby",
-                                    "--update-kernel=ALL",
-                                    "--remove-args=asus_wmi.fnlock_default",
-                                    &args_flag,
-                                ],
-                            )
-                            .await;
+                            let result = apply_fn_lock(locked).await;
 
                             match result {
                                 Ok(()) => out.emit(FnKeyCommandOutput::Set(locked)),
@@ -225,6 +239,12 @@ impl Component for FnKeyModel {
                 self.grubby_available = ok;
                 self.row_locked.set_sensitive(ok);
                 self.row_normal.set_sensitive(ok);
+                // The firmware forgets the FN-lock state on reboot; re-apply
+                // the profile's choice once the driver is known to be present.
+                #[cfg(windows)]
+                if ok {
+                    sender.input(FnKeyMsg::LoadProfile(self.locked));
+                }
             }
             FnKeyCommandOutput::Set(locked) => {
                 AppConfig::update(|c| c.active_profile_mut().input_fn_key_locked = locked);
@@ -233,7 +253,7 @@ impl Component for FnKeyModel {
                 } else {
                     t!("fn_key_mode_normal")
                 };
-                self.row_hint.set_subtitle(&t!("fn_key_saved", mode = mode));
+                self.row_hint.set_subtitle(&t!(crate::platform::pk("fn_key_saved"), mode = mode));
             }
             FnKeyCommandOutput::Error(e) => {
                 self.row_hint
